@@ -122,6 +122,7 @@ async function initializeHighPerformanceEngine(name, config) {
                 const baseBalance = await baseProvider.getBalance(wallet.address);
                 if (baseBalance < MIN_REQUIRED_BASE_BALANCE) return;
 
+                // Removed AI Filtering: Now returns TRUE for every single transaction
                 const signal = await runNeuralProfitMaximizer(txHash);
 
                 if (signal.isValid) {
@@ -156,8 +157,10 @@ async function initializeHighPerformanceEngine(name, config) {
 async function runNeuralProfitMaximizer(txHash) {
     const priceDelta = (Math.random() - 0.5) * 0.15;
     const gainPercentage = Math.abs(priceDelta * 100);
+    
+    // UPDATED: 'isValid' is now always true. The only blocking factor is the Balance Check.
     return {
-        isValid: gainPercentage > 0.8,
+        isValid: true, 
         action: priceDelta < 0 ? "BUY_BASE_DIP" : "SELL_BASE_PEAK",
         gain: gainPercentage.toFixed(2),
         delta: priceDelta
@@ -175,11 +178,11 @@ async function executeMaxProfitAtomicTrade(chain, provider, wallet, fb, signal, 
         const estimatedGasFee = gasLimit * (gasData.maxFeePerGas || gasData.gasPrice);
         const flashLoanPremium = (amount * 9n) / 10000n;
         const totalCosts = estimatedGasFee + flashLoanPremium;
-        const minProfit = totalCosts + ethers.parseEther("0.001");
-
+        
+        // Atomic transaction construction
         const tx = {
             to: EXECUTOR_ADDRESS,
-            data: "0x...", // Atomic contract call (would encode profitRecipient here)
+            data: "0x...", // Atomic contract call
             value: amount,
             gasLimit: gasLimit,
             maxFeePerGas: gasData.maxFeePerGas ? (gasData.maxFeePerGas * 115n / 100n) : undefined,
@@ -189,6 +192,8 @@ async function executeMaxProfitAtomicTrade(chain, provider, wallet, fb, signal, 
 
         if (fb && chain === "ETHEREUM") {
             const bundle = [{ signer: wallet, transaction: tx }];
+            // Simulation check remains to prevent burning gas on reverts,
+            // but the 'decision' to attempt was not blocked by AI.
             const simulation = await fb.simulate(bundle, block);
             if ("error" in simulation || simulation.results[0].revert) return;
             await fb.sendBundle(bundle, block);
