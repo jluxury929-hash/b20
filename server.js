@@ -1,12 +1,12 @@
 /**
  * ===============================================================================
- * APEX TITAN v83.0 (OMNISCIENT LOGGER) - CLUSTERED MULTI-CHAIN ARBITRAGE
+ * APEX TITAN v84.0 (NATIVE CORE) - CLUSTERED MULTI-CHAIN ARBITRAGE
  * ===============================================================================
  * FEATURES:
  * 1. CLUSTERED CORES: Multi-process architecture for zero-latency handling.
- * 2. SATURATION BROADCAST: Dual-channel tx submission (RPC + Axios).
+ * 2. SATURATION BROADCAST: Dual-channel tx submission (RPC + Fetch).
  * 3. DIRECT EXECUTION: Pure capital allocation (No Flash Loans).
- * 4. OMNISCIENT LOGGING: Zero silent failures. Every decision is logged.
+ * 4. NATIVE COMPATIBILITY: Removed Axios dependency (Fixes 'Module Not Found').
  * 5. MULTI-CHAIN: Base, Ethereum, Polygon, Arbitrum simultaneous scanning.
  * ===============================================================================
  */
@@ -14,7 +14,7 @@
 const cluster = require('cluster');
 const os = require('os');
 const http = require('http');
-const axios = require('axios');
+// const axios = require('axios'); // REMOVED: Caused Module Not Found Error
 const WebSocket = require("ws");
 const { 
     ethers, JsonRpcProvider, Wallet, Contract, 
@@ -27,7 +27,6 @@ require('dotenv').config();
 process.setMaxListeners(500); 
 process.on('uncaughtException', (err) => {
     const msg = err.message || "";
-    // We log these now so you know they are happening, even if we suppress the crash
     if (msg.includes('429') || msg.includes('32005') || msg.includes('coalesce') || msg.includes('network')) {
         console.warn(`[Aeigs Shield] Suppressed Network Error: ${msg}`);
         return;
@@ -85,8 +84,8 @@ function sanitize(k) {
 if (cluster.isPrimary) {
     console.clear();
     console.log(`${TXT.gold}${TXT.bold}╔════════════════════════════════════════════════════════╗`);
-    console.log(`║    ⚡ APEX TITAN v83.0 | OMNISCIENT LOGGER            ║`);
-    console.log(`║    CORES: ${os.cpus().length} | LOGGING: VERBOSE / ALL ERRORS       ║`);
+    console.log(`║    ⚡ APEX TITAN v84.0 | NATIVE CORE (NO AXIOS)       ║`);
+    console.log(`║    CORES: ${os.cpus().length} | STATUS: OPTIMIZED FOR NODE v22        ║`);
     console.log(`║    RECIPIENT: ${PROFIT_RECIPIENT.slice(0, 10)}...            ║`);
     console.log(`╚════════════════════════════════════════════════════════╝${TXT.reset}\n`);
 
@@ -101,8 +100,6 @@ if (cluster.isPrimary) {
 
     cluster.on('exit', (worker, code, signal) => {
         console.log(`${TXT.red}Worker ${worker.process.pid} died (Code: ${code}). Respawning...${TXT.reset}`);
-        // Simple logic to find which chain died could be added here, 
-        // currently relies on manual restart or docker for full robustness
     });
 
 } else {
@@ -122,9 +119,7 @@ async function runWorkerEngine() {
         http.createServer((req, res) => {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ status: "ALIVE", chain: targetChain, worker: cluster.worker.id }));
-        }).listen(port, () => {
-             // console.log(`[${targetChain}] Health Monitor running on port ${port}`);
-        });
+        }).listen(port, () => {});
     } catch (e) {
         console.error(`[${targetChain}] Health Monitor Init Failed: ${e.message}`);
     }
@@ -192,7 +187,6 @@ async function initializeHighPerformanceEngine(name, config) {
                 // Check balance with LOGGING
                 const currentBalance = await provider.getBalance(wallet.address);
                 if (currentBalance < parseEther("0.005")) {
-                    // console.log(`[${name}] SKIPPED: Low Balance (${formatEther(currentBalance)} ETH)`);
                     return;
                 }
 
@@ -204,8 +198,6 @@ async function initializeHighPerformanceEngine(name, config) {
                     console.log(`[${name}] OP: ${signal.path.join('->')} | Latency: ${latency.toFixed(2)}μs`);
                     
                     await executeAbsoluteStrike(name, provider, wallet, flashbots, signal, currentBalance, rpcUrl);
-                } else {
-                    console.log(`[${name}] Signal Invalid: ${signal.reason || "Unknown"}`);
                 }
             } catch (err) { 
                 console.error(`[${name}] Processing Loop Error: ${err.message}`);
@@ -281,22 +273,26 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
             await fb.sendBundle(bundle, block);
             console.log(`${TXT.gold}[${chain}] Flashbots Bundle Dispatched. Block: ${block}${TXT.reset}`);
         } else {
-            // --- SATURATION BROADCAST (v80.1 Feature) ---
+            // --- SATURATION BROADCAST (NATIVE FETCH) ---
             // 1. Sign Locally
             const signedTx = await wallet.signTransaction(tx);
             
             console.log(`${TXT.green}[${chain}] 🚀 SATURATION STRIKE INITIATED...${TXT.reset}`);
             
-            // 2. Blast via Axios (Raw RPC) - Bypass Ethers overhead
-            axios.post(rpcUrl, { 
-                jsonrpc: "2.0", 
-                id: 1, 
-                method: "eth_sendRawTransaction", 
-                params: [signedTx] 
+            // 2. Blast via Native Fetch (Raw RPC) - Bypass Ethers overhead
+            fetch(rpcUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    jsonrpc: "2.0",
+                    id: 1,
+                    method: "eth_sendRawTransaction",
+                    params: [signedTx]
+                })
             }).then(() => {
-                console.log(`[${chain}] Axios Direct RPC: Sent`);
+                console.log(`[${chain}] Direct RPC (Fetch): Sent`);
             }).catch((e) => {
-                console.warn(`[${chain}] Axios Broadcast Failed: ${e.message}`);
+                console.warn(`[${chain}] Fetch Broadcast Failed: ${e.message}`);
             });
 
             // 3. Send via Ethers (Redundancy) & Wait
@@ -311,6 +307,6 @@ async function executeAbsoluteStrike(chain, provider, wallet, fb, signal, balanc
         }
     } catch (err) {
         console.log(`${TXT.red}[${chain}] Strike Failed: ${err.message}${TXT.reset}`);
-        if (err.stack) console.log(err.stack.split('\n')[1]); // Log first line of stack trace
+        if (err.stack) console.log(err.stack.split('\n')[1]); 
     }
 }
